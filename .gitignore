@@ -1,0 +1,14 @@
+# OS and editor files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local userscript variants and backups (may contain webhook credentials)
+*.local.user.js
+*.user.js.bak
+
+# Local agent tooling
+.omo/
+.codegraph
