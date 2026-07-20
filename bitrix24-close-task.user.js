@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bitrix24: время, результат и завершение
 // @namespace    http://tampermonkey.net/
-// @version      4.0.0
-// @description  Записывает время и результат, затем завершает задачу через REST API Bitrix24.
+// @version      5.0.0
+// @description  Завершает одну или несколько задач с записью времени и результата через REST API Bitrix24.
 // @match        https://*/company/personal/user/*/tasks/*
 // @grant        none
 // ==/UserScript==
@@ -19,6 +19,7 @@
     });
     const MAX_SAFE_MINUTES = Math.floor(Number.MAX_SAFE_INTEGER / 60);
     const completedTaskIds = new Set();
+    const selectedTaskIds = new Set();
 
     class BitrixApiError extends Error {
         constructor(method, status, code, message) {
@@ -199,11 +200,18 @@
     }
 
     const dialogState = {
-        activeTask: null,
+        activeTasks: [],
+        focusReturn: null,
         dialog: null,
         elements: null,
         submitting: false,
         retryBlocked: false,
+    };
+
+    const selectionState = {
+        bar: null,
+        count: null,
+        submit: null,
     };
 
     function installStyles() {
@@ -213,6 +221,8 @@
         style.id = 'tm-completion-styles';
         style.textContent = `
             .tm-add-time,
+            .tm-task-selector,
+            .tm-selection-bar,
             .tm-completion-dialog {
                 --tm-surface: #ffffff;
                 --tm-surface-subtle: #f5f7f8;
@@ -231,6 +241,7 @@
                 --tm-focus: rgba(32, 103, 176, 0.28);
                 --tm-backdrop: rgba(28, 38, 48, 0.42);
                 --tm-shadow-modal: 0 12px 36px rgba(32, 45, 58, 0.24);
+                --tm-shadow-floating: 0 6px 22px rgba(32, 45, 58, 0.2);
                 --tm-opacity-trigger-disabled: .72;
                 --tm-opacity-control-disabled: .66;
                 --tm-space-1: 4px;
@@ -288,6 +299,114 @@
 
             .tm-add-time[data-state="success"]:disabled {
                 color: var(--tm-success);
+            }
+
+            .tm-task-selector {
+                display: inline-flex;
+                align-items: center;
+                gap: var(--tm-space-1);
+                min-block-size: 28px;
+                margin-inline-start: var(--tm-space-2);
+                color: var(--tm-text-secondary);
+                cursor: pointer;
+                font: 400 var(--tm-font-small)/1.4 Arial, "Helvetica Neue", sans-serif;
+            }
+
+            .tm-task-selector__input {
+                inline-size: 16px;
+                block-size: 16px;
+                margin: 0;
+                accent-color: var(--tm-accent);
+                cursor: pointer;
+            }
+
+            .tm-task-selector__input:focus-visible {
+                outline: var(--tm-border-width) solid var(--tm-accent);
+                outline-offset: var(--tm-space-1);
+                box-shadow: 0 0 0 var(--tm-space-1) var(--tm-focus);
+            }
+
+            .tm-task-selector:has(.tm-task-selector__input:checked) {
+                color: var(--tm-accent);
+                font-weight: 600;
+            }
+
+            .tm-task-selector:has(.tm-task-selector__input:disabled) {
+                color: var(--tm-disabled);
+                cursor: default;
+                opacity: var(--tm-opacity-trigger-disabled);
+            }
+
+            .tm-selection-bar {
+                position: fixed;
+                inset-inline-start: 50%;
+                inset-block-end: var(--tm-space-4);
+                z-index: 10000;
+                display: flex;
+                align-items: center;
+                gap: var(--tm-space-3);
+                box-sizing: border-box;
+                max-inline-size: calc(100vw - (var(--tm-space-4) * 2));
+                min-block-size: 52px;
+                padding: var(--tm-space-2) var(--tm-space-3) var(--tm-space-2) var(--tm-space-4);
+                transform: translateX(-50%);
+                border: var(--tm-border-width) solid var(--tm-border-subtle);
+                border-radius: var(--tm-radius-dialog);
+                background: var(--tm-surface);
+                color: var(--tm-text-primary);
+                box-shadow: var(--tm-shadow-floating);
+                font: 400 var(--tm-font-body)/1.45 Arial, "Helvetica Neue", sans-serif;
+            }
+
+            .tm-selection-bar[hidden] {
+                display: none;
+            }
+
+            .tm-selection-bar__count {
+                min-inline-size: max-content;
+                font-weight: 600;
+            }
+
+            .tm-selection-bar__button {
+                min-block-size: 36px;
+                padding: var(--tm-space-2) var(--tm-space-3);
+                border: var(--tm-border-width) solid var(--tm-border);
+                border-radius: var(--tm-radius-small);
+                background: var(--tm-surface);
+                color: var(--tm-text-primary);
+                cursor: pointer;
+                font: inherit;
+                white-space: nowrap;
+                transition: background-color var(--tm-motion-fast), border-color var(--tm-motion-fast), color var(--tm-motion-fast);
+            }
+
+            .tm-selection-bar__button:hover {
+                background: var(--tm-surface-subtle);
+                border-color: var(--tm-text-secondary);
+            }
+
+            .tm-selection-bar__button--submit {
+                border-color: var(--tm-accent);
+                background: var(--tm-accent);
+                color: var(--tm-text-on-accent);
+                font-weight: 600;
+            }
+
+            .tm-selection-bar__button--submit:hover {
+                border-color: var(--tm-accent-hover);
+                background: var(--tm-accent-hover);
+            }
+
+            .tm-selection-bar__button:active {
+                border-color: var(--tm-accent-active);
+                background: var(--tm-accent-active);
+                color: var(--tm-text-on-accent);
+            }
+
+            .tm-selection-bar__button:focus-visible {
+                outline: var(--tm-border-width) solid var(--tm-accent);
+                outline-offset: var(--tm-space-1);
+                box-shadow: 0 0 0 var(--tm-space-1) var(--tm-focus);
             }
 
             .tm-completion-dialog {
@@ -500,10 +619,29 @@
                     inline-size: 100%;
                     padding-inline: var(--tm-space-2);
                 }
+
+                .tm-selection-bar {
+                    display: grid;
+                    grid-template-columns: 1fr 1fr;
+                    inline-size: calc(100vw - (var(--tm-space-4) * 2));
+                }
+
+                .tm-selection-bar[hidden] {
+                    display: none;
+                }
+
+                .tm-selection-bar__count {
+                    grid-column: 1 / -1;
+                }
+
+                .tm-selection-bar__button {
+                    inline-size: 100%;
+                }
             }
 
             @media (prefers-reduced-motion: reduce) {
                 .tm-add-time,
+                .tm-selection-bar__button,
                 .tm-completion-dialog__button {
                     transition: none;
                 }
@@ -594,6 +732,102 @@
         trigger.disabled = true;
     }
 
+    function syncTaskControls(taskId) {
+        document.querySelectorAll('.tasks-kanban-item').forEach((item) => {
+            if (getTaskId(item) !== taskId) return;
+
+            const trigger = item.querySelector('.tm-add-time');
+            const selector = item.querySelector('.tm-task-selector__input');
+            if (completedTaskIds.has(taskId)) {
+                if (trigger) markTriggerCompleted(trigger, taskId);
+                if (selector) {
+                    selector.checked = false;
+                    selector.disabled = true;
+                }
+                return;
+            }
+            if (selector) selector.checked = selectedTaskIds.has(taskId);
+        });
+    }
+
+    function updateSelectionBar() {
+        const selectedCount = selectedTaskIds.size;
+        if (!selectionState.bar) return;
+
+        const shouldHide = selectedCount === 0;
+        const countText = `Выбрано: ${selectedCount}`;
+        if (selectionState.bar.hidden !== shouldHide) selectionState.bar.hidden = shouldHide;
+        if (selectionState.count.textContent !== countText) selectionState.count.textContent = countText;
+        if (selectionState.submit.disabled !== shouldHide) selectionState.submit.disabled = shouldHide;
+    }
+
+    function clearSelection() {
+        const taskIds = [...selectedTaskIds];
+        selectedTaskIds.clear();
+        taskIds.forEach(syncTaskControls);
+        updateSelectionBar();
+    }
+
+    function getSelectedTasks() {
+        const tasks = [];
+        const seenTaskIds = new Set();
+
+        document.querySelectorAll('.tasks-kanban-item').forEach((item) => {
+            const taskId = getTaskId(item);
+            if (!taskId || seenTaskIds.has(taskId) || !selectedTaskIds.has(taskId)) return;
+
+            seenTaskIds.add(taskId);
+            tasks.push({
+                taskId,
+                item,
+                trigger: item.querySelector('.tm-add-time'),
+            });
+        });
+        return tasks;
+    }
+
+    function pruneUnavailableSelections() {
+        const availableTaskIds = new Set();
+        document.querySelectorAll('.tasks-kanban-item').forEach((item) => {
+            const taskId = getTaskId(item);
+            if (taskId) availableTaskIds.add(taskId);
+        });
+        selectedTaskIds.forEach((taskId) => {
+            if (!availableTaskIds.has(taskId)) selectedTaskIds.delete(taskId);
+        });
+    }
+
+    function createSelectionBar() {
+        if (selectionState.bar) return selectionState.bar;
+
+        const bar = document.createElement('section');
+        bar.className = 'tm-selection-bar';
+        bar.hidden = true;
+        bar.setAttribute('role', 'region');
+        bar.setAttribute('aria-label', 'Групповое завершение задач');
+        bar.innerHTML = `
+            <span class="tm-selection-bar__count" aria-live="polite">Выбрано: 0</span>
+            <button class="tm-selection-bar__button tm-selection-bar__button--clear" type="button">Снять выбор</button>
+            <button class="tm-selection-bar__button tm-selection-bar__button--submit" type="button">Завершить…</button>
+        `;
+        document.body.appendChild(bar);
+
+        selectionState.bar = bar;
+        selectionState.count = bar.querySelector('.tm-selection-bar__count');
+        selectionState.submit = bar.querySelector('.tm-selection-bar__button--submit');
+
+        bar.querySelector('.tm-selection-bar__button--clear').addEventListener('click', clearSelection);
+        selectionState.submit.addEventListener('click', () => {
+            const tasks = getSelectedTasks();
+            if (tasks.length === 0) {
+                clearSelection();
+                return;
+            }
+            openDialog(tasks, selectionState.submit);
+        });
+        return bar;
+    }
+
     function createDialog() {
         installStyles();
 
@@ -654,9 +888,9 @@
         });
 
         dialog.addEventListener('close', () => {
-            const { trigger, focusFallback } = dialogState.activeTask || {};
-            dialogState.activeTask = null;
-            const focusTarget = trigger?.disabled ? focusFallback : trigger;
+            const focusTarget = dialogState.focusReturn;
+            dialogState.activeTasks = [];
+            dialogState.focusReturn = null;
             if (focusTarget?.isConnected) focusTarget.focus();
         });
 
@@ -671,74 +905,100 @@
 
         elements.form.addEventListener('submit', async (event) => {
             event.preventDefault();
-            if (dialogState.submitting || dialogState.retryBlocked || !dialogState.activeTask) return;
+            if (dialogState.submitting || dialogState.retryBlocked || dialogState.activeTasks.length === 0) return;
 
             clearDialogMessages();
             const submission = readSubmission();
             if (!submission) return;
 
-            const activeTask = dialogState.activeTask;
-            let mutationAttempted = false;
+            const activeTasks = [...dialogState.activeTasks];
+            const failures = [];
+            let completedCount = 0;
             setSubmitting(true);
 
-            try {
-                await processTask(
-                    activeTask.taskId,
-                    submission.elapsedSeconds,
-                    submission.comment,
-                    setStage,
-                    () => { mutationAttempted = true; },
-                );
-                elements.status.textContent = 'Задача завершена.';
+            for (const [index, activeTask] of activeTasks.entries()) {
+                let mutationAttempted = false;
+                const stagePrefix = activeTasks.length > 1
+                    ? `Задача ${index + 1} из ${activeTasks.length}`
+                    : '';
+                try {
+                    await processTask(
+                        activeTask.taskId,
+                        submission.elapsedSeconds,
+                        submission.comment,
+                        (stage) => setStage(stagePrefix ? `${stagePrefix}: ${stage}` : stage),
+                        () => { mutationAttempted = true; },
+                    );
+                    completedCount += 1;
+                    completedTaskIds.add(activeTask.taskId);
+                    selectedTaskIds.delete(activeTask.taskId);
+                    syncTaskControls(activeTask.taskId);
+                } catch (error) {
+                    failures.push({ activeTask, error, mutationAttempted });
+                    if (mutationAttempted) {
+                        selectedTaskIds.delete(activeTask.taskId);
+                        syncTaskControls(activeTask.taskId);
+                    }
+                    console.error('[Bitrix24 task completion]', activeTask.taskId, error);
+                }
+            }
+
+            updateSelectionBar();
+
+            if (failures.length === 0) {
+                elements.status.textContent = activeTasks.length === 1
+                    ? 'Задача завершена.'
+                    : `Завершено задач: ${completedCount}.`;
                 elements.status.dataset.state = 'success';
                 elements.submit.textContent = 'Готово';
-                completedTaskIds.add(activeTask.taskId);
-                markTriggerCompleted(activeTask.trigger, activeTask.taskId);
                 setTimeout(() => {
                     setSubmitting(false);
                     closeDialog('success');
                 }, 700);
-            } catch (error) {
-                dialogState.retryBlocked = mutationAttempted;
-                setSubmitting(false);
-                elements.error.textContent = `Не удалось завершить задачу: ${error instanceof Error ? error.message : String(error)}`;
-                elements.error.hidden = false;
-                elements.status.textContent = mutationAttempted
-                    ? 'Операция могла выполниться частично. Проверьте задачу в Bitrix24 перед ручным повтором.'
-                    : 'Данные сохранены в форме. Можно повторить отправку.';
-                elements.status.dataset.state = 'error';
-                requestAnimationFrame(() => {
-                    if (mutationAttempted) elements.error.focus();
-                    else elements.submit.focus();
-                });
-                console.error('[Bitrix24 task completion]', error);
+                return;
             }
+
+            const retryIsSafe = activeTasks.length === 1
+                && completedCount === 0
+                && !failures[0].mutationAttempted;
+            dialogState.retryBlocked = !retryIsSafe;
+            setSubmitting(false);
+            elements.error.textContent = failures.map(({ activeTask, error }) => (
+                `Задача №${activeTask.taskId}: ${error instanceof Error ? error.message : String(error)}`
+            )).join(' ');
+            elements.error.hidden = false;
+            elements.status.textContent = retryIsSafe
+                ? 'Данные сохранены в форме. Можно повторить отправку.'
+                : `Завершено: ${completedCount}. С ошибкой: ${failures.length}. Проверьте эти задачи в Bitrix24 перед ручным повтором.`;
+            elements.status.dataset.state = 'error';
+            requestAnimationFrame(() => elements.error.focus());
         });
 
         return dialog;
     }
 
-    function openDialog(item, trigger, taskId) {
-        if (completedTaskIds.has(taskId)) {
-            markTriggerCompleted(trigger, taskId);
-            return;
-        }
-
+    function openDialog(tasks, focusReturn) {
+        const activeTasks = tasks.filter(({ taskId }) => !completedTaskIds.has(taskId));
+        if (activeTasks.length === 0) return;
         const dialog = dialogState.dialog || createDialog();
         if (dialog.open) return;
 
-        const title = item.querySelector('.tasks-kanban-item-title')?.textContent?.trim()
-            || `Задача №${taskId}`;
-        dialogState.activeTask = {
-            taskId,
-            trigger,
-            focusFallback: item.querySelector('.tasks-kanban-item-title'),
-        };
+        const firstTask = activeTasks[0];
+        const title = firstTask.item.querySelector('.tasks-kanban-item-title')?.textContent?.trim()
+            || `Задача №${firstTask.taskId}`;
+        dialogState.activeTasks = activeTasks;
+        dialogState.focusReturn = focusReturn;
         dialogState.retryBlocked = false;
         dialogState.elements.title.textContent = keepShortRussianWordsTogether(
-            `Завершить задачу «${title}»`,
+            activeTasks.length === 1
+                ? `Завершить задачу «${title}»`
+                : `Завершить выбранные задачи (${activeTasks.length})`,
         );
-        dialogState.elements.context.textContent = `Задача №${taskId}`;
+        dialogState.elements.context.textContent = keepShortRussianWordsTogether(
+            activeTasks.length === 1
+                ? `Задача №${firstTask.taskId}`
+                : `Одинаковые время и комментарий будут добавлены к ${activeTasks.length} задачам.`,
+        );
         dialogState.elements.minutes.value = String(CONFIG.ELAPSED_SECONDS / 60);
         dialogState.elements.comment.value = CONFIG.COMPLETION_COMMENT;
         setSubmitting(false);
@@ -785,15 +1045,47 @@
                 return;
             }
 
-            openDialog(item, button, taskId);
+            openDialog([{ taskId, item, trigger: button }], button);
         });
 
         container.appendChild(button);
     }
 
+    function addSelector(item) {
+        if (item.querySelector('.tm-task-selector')) return;
+
+        const container = item.querySelector('.tasks-kanban-actions-container');
+        const taskId = getTaskId(item);
+        if (!container || !taskId) return;
+
+        const label = document.createElement('label');
+        label.className = 'tm-task-selector';
+        label.title = `Выбрать задачу ${taskId} для группового завершения`;
+        label.innerHTML = `
+            <input class="tm-task-selector__input" type="checkbox" aria-label="Выбрать задачу ${taskId}">
+            <span>Выбрать</span>
+        `;
+        const checkbox = label.querySelector('.tm-task-selector__input');
+        checkbox.checked = selectedTaskIds.has(taskId);
+        checkbox.disabled = completedTaskIds.has(taskId);
+        checkbox.addEventListener('click', (event) => event.stopPropagation());
+        checkbox.addEventListener('change', () => {
+            if (checkbox.checked) selectedTaskIds.add(taskId);
+            else selectedTaskIds.delete(taskId);
+            updateSelectionBar();
+        });
+        container.prepend(label);
+    }
+
     function init() {
         installStyles();
-        document.querySelectorAll('.tasks-kanban-item').forEach(addButton);
+        createSelectionBar();
+        pruneUnavailableSelections();
+        document.querySelectorAll('.tasks-kanban-item').forEach((item) => {
+            addSelector(item);
+            addButton(item);
+        });
+        updateSelectionBar();
     }
 
     init();
