@@ -19,11 +19,10 @@ Userscript для Bitrix24: добавляет к карточкам задач 
 успешных и проблемных заявок. Не повторяйте частично выполненную операцию вслепую:
 сначала проверьте отмеченные номера заявок в Bitrix24.
 
-## Установка
+## Установка в Tampermonkey
 
-1. Установьте расширение [Tampermonkey](https://www.tampermonkey.net/).
-2. Создайте в нём новый userscript и замените его содержимое файлом
-   `bitrix24-close-task.user.js` из этого репозитория.
+1. Установите расширение [Tampermonkey](https://www.tampermonkey.net/).
+2. Нажмите **[«Установить userscript»](https://culnaen.github.io/bitrix24-task-closer/bitrix24-close-task.user.js)** и подтвердите установку в Tampermonkey.
 3. Откройте меню расширения Tampermonkey на странице задач и выберите
    **«Настроить Bitrix24 Task Closer»**.
 4. Укажите данные вебхука и сохраните настройки.
