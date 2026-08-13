@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bitrix24: время, результат и завершение
 // @namespace    http://tampermonkey.net/
-// @version      5.1.0
+// @version      5.2.0
 // @description  Завершает одну или несколько задач с записью времени и результата через REST API Bitrix24.
 // @match        https://*/company/personal/user/*/tasks/*
 // @grant        GM_getValue
@@ -38,57 +38,150 @@
     }
 
     function configureScript() {
+        document.getElementById('tm-settings-overlay')?.remove();
+
         const config = getConfiguration();
-        const userId = window.prompt('WEBHOOK_USER_ID — ID пользователя вебхука:', String(config.WEBHOOK_USER_ID));
-        if (userId === null) return;
-        if (!/^\d+$/.test(userId) || Number(userId) === 0) {
-            window.alert('WEBHOOK_USER_ID должен быть положительным целым числом.');
-            return;
+        const overlay = document.createElement('div');
+        const panel = document.createElement('form');
+        const inputs = {};
+
+        overlay.id = 'tm-settings-overlay';
+        Object.assign(overlay.style, {
+            position: 'fixed',
+            inset: '0',
+            zIndex: '2147483647',
+            display: 'grid',
+            placeItems: 'center',
+            padding: '16px',
+            boxSizing: 'border-box',
+            background: 'rgba(0, 0, 0, 0.55)',
+            font: '14px/1.4 sans-serif',
+        });
+        Object.assign(panel.style, {
+            width: 'min(480px, 100%)',
+            boxSizing: 'border-box',
+            padding: '20px',
+            borderRadius: '8px',
+            background: '#18181b',
+            color: '#fafafa',
+            boxShadow: '0 8px 24px rgba(0, 0, 0, 0.35)',
+        });
+
+        const title = document.createElement('h2');
+        title.textContent = 'Настройки Bitrix24 Task Closer';
+        title.style.margin = '0';
+        panel.append(title);
+
+        const hint = document.createElement('p');
+        hint.textContent = 'Код вебхука сохраняется только в хранилище Tampermonkey.';
+        hint.style.cssText = 'margin:8px 0 0;color:#d4d4d8;';
+        panel.append(hint);
+
+        const fields = [
+            ['WEBHOOK_USER_ID', 'userId', 'number', String(config.WEBHOOK_USER_ID)],
+            ['WEBHOOK_CODE', 'webhookCode', 'password', config.WEBHOOK_CODE],
+            ['Время по умолчанию, минут', 'elapsedMinutes', 'number', String(config.ELAPSED_SECONDS / 60)],
+            ['COMPLETION_COMMENT', 'completionComment', 'text', config.COMPLETION_COMMENT],
+        ];
+        for (const [labelText, name, type, value] of fields) {
+            const label = document.createElement('label');
+            label.textContent = labelText;
+            label.style.cssText = 'display:block;margin-top:12px;';
+            const input = document.createElement('input');
+            input.type = type;
+            input.value = value;
+            input.required = true;
+            input.style.cssText = 'box-sizing:border-box;display:block;margin-top:4px;padding:8px;width:100%;';
+            if (name === 'userId' || name === 'elapsedMinutes') {
+                input.min = '1';
+                input.step = '1';
+                input.inputMode = 'numeric';
+            }
+            label.append(input);
+            panel.append(label);
+            inputs[name] = input;
         }
 
-        const webhookCode = window.prompt('WEBHOOK_CODE — код входящего вебхука:', config.WEBHOOK_CODE);
-        if (webhookCode === null) return;
-        if (!webhookCode.trim() || webhookCode === DEFAULT_CONFIG.WEBHOOK_CODE) {
-            window.alert('Укажите код входящего вебхука.');
-            return;
+        const modeLabel = document.createElement('label');
+        modeLabel.textContent = 'COMMENT_MODE';
+        modeLabel.style.cssText = 'display:block;margin-top:12px;';
+        const mode = document.createElement('select');
+        mode.style.cssText = 'box-sizing:border-box;display:block;margin-top:4px;padding:8px;width:100%;';
+        for (const [value, text] of [['auto', 'Автоматически'], ['chat', 'Чат'], ['legacy', 'Старый API']]) {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = text;
+            option.selected = value === config.COMMENT_MODE;
+            mode.append(option);
         }
+        modeLabel.append(mode);
+        panel.append(modeLabel);
+        inputs.commentMode = mode;
 
-        const elapsedMinutes = window.prompt(
-            'ELAPSED_SECONDS — время по умолчанию в минутах:',
-            String(config.ELAPSED_SECONDS / 60),
-        );
-        if (elapsedMinutes === null) return;
-        if (!/^\d+$/.test(elapsedMinutes) || Number(elapsedMinutes) === 0) {
-            window.alert('Время должно быть положительным целым числом минут.');
-            return;
-        }
+        const error = document.createElement('div');
+        error.style.cssText = 'color:#fca5a5;margin-top:12px;min-height:20px;';
+        panel.append(error);
 
-        const completionComment = window.prompt(
-            'COMPLETION_COMMENT — результат работы:',
-            config.COMPLETION_COMMENT,
-        );
-        if (completionComment === null) return;
-        if (!completionComment.trim()) {
-            window.alert('COMPLETION_COMMENT не может быть пустым.');
-            return;
-        }
+        const save = document.createElement('button');
+        save.type = 'submit';
+        save.textContent = 'Сохранить';
+        const reset = document.createElement('button');
+        reset.type = 'button';
+        reset.textContent = 'Сбросить';
+        reset.style.marginLeft = '8px';
+        const cancel = document.createElement('button');
+        cancel.type = 'button';
+        cancel.textContent = 'Отмена';
+        cancel.style.marginLeft = '8px';
+        panel.append(save, reset, cancel);
 
-        const commentMode = window.prompt(
-            'COMMENT_MODE — auto, chat или legacy:',
-            config.COMMENT_MODE,
-        );
-        if (commentMode === null) return;
-        if (!['auto', 'chat', 'legacy'].includes(commentMode)) {
-            window.alert('COMMENT_MODE может быть только auto, chat или legacy.');
-            return;
-        }
+        const close = () => overlay.remove();
+        cancel.addEventListener('click', close);
+        overlay.addEventListener('click', (event) => {
+            if (event.target === overlay) close();
+        });
+        reset.addEventListener('click', () => {
+            GM_setValue('WEBHOOK_USER_ID', DEFAULT_CONFIG.WEBHOOK_USER_ID);
+            GM_setValue('WEBHOOK_CODE', DEFAULT_CONFIG.WEBHOOK_CODE);
+            GM_setValue('ELAPSED_SECONDS', DEFAULT_CONFIG.ELAPSED_SECONDS);
+            GM_setValue('COMPLETION_COMMENT', DEFAULT_CONFIG.COMPLETION_COMMENT);
+            GM_setValue('COMMENT_MODE', DEFAULT_CONFIG.COMMENT_MODE);
+            close();
+        });
+        panel.addEventListener('submit', (event) => {
+            event.preventDefault();
+            const userId = inputs.userId.value.trim();
+            const webhookCode = inputs.webhookCode.value.trim();
+            const elapsedMinutes = inputs.elapsedMinutes.value.trim();
+            const completionComment = inputs.completionComment.value.trim();
+            if (!/^\d+$/.test(userId) || Number(userId) === 0) {
+                error.textContent = 'WEBHOOK_USER_ID должен быть положительным целым числом.';
+                return;
+            }
+            if (!webhookCode || webhookCode === DEFAULT_CONFIG.WEBHOOK_CODE) {
+                error.textContent = 'Укажите код входящего вебхука.';
+                return;
+            }
+            if (!/^\d+$/.test(elapsedMinutes) || Number(elapsedMinutes) === 0) {
+                error.textContent = 'Время должно быть положительным целым числом минут.';
+                return;
+            }
+            if (!completionComment) {
+                error.textContent = 'COMPLETION_COMMENT не может быть пустым.';
+                return;
+            }
 
-        GM_setValue('WEBHOOK_USER_ID', Number(userId));
-        GM_setValue('WEBHOOK_CODE', webhookCode.trim());
-        GM_setValue('ELAPSED_SECONDS', Number(elapsedMinutes) * 60);
-        GM_setValue('COMPLETION_COMMENT', completionComment.trim());
-        GM_setValue('COMMENT_MODE', commentMode);
-        window.alert('Настройки сохранены. Новые значения применяются сразу.');
+            GM_setValue('WEBHOOK_USER_ID', Number(userId));
+            GM_setValue('WEBHOOK_CODE', webhookCode);
+            GM_setValue('ELAPSED_SECONDS', Number(elapsedMinutes) * 60);
+            GM_setValue('COMPLETION_COMMENT', completionComment);
+            GM_setValue('COMMENT_MODE', inputs.commentMode.value);
+            close();
+        });
+
+        overlay.append(panel);
+        (document.body || document.documentElement).append(overlay);
+        inputs.userId.focus();
     }
     GM_registerMenuCommand('Настроить Bitrix24 Task Closer', configureScript);
     const MAX_SAFE_MINUTES = Math.floor(Number.MAX_SAFE_INTEGER / 60);
