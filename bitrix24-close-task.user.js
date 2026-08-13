@@ -1,22 +1,96 @@
 // ==UserScript==
 // @name         Bitrix24: время, результат и завершение
 // @namespace    http://tampermonkey.net/
-// @version      5.0.0
+// @version      5.1.0
 // @description  Завершает одну или несколько задач с записью времени и результата через REST API Bitrix24.
 // @match        https://*/company/personal/user/*/tasks/*
-// @grant        none
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
 // ==/UserScript==
 
 (function () {
     'use strict';
 
-    const CONFIG = Object.freeze({
+    const DEFAULT_CONFIG = Object.freeze({
         WEBHOOK_USER_ID: 26,
         WEBHOOK_CODE: 'PASTE_INCOMING_WEBHOOK_CODE_HERE',
         ELAPSED_SECONDS: 60,
-        COMPLETION_COMMENT: 'Работа по задаче выполнена.',
+        COMPLETION_COMMENT: 'Решено.',
         COMMENT_MODE: 'auto',
     });
+
+    function getConfiguration() {
+        const commentMode = String(GM_getValue('COMMENT_MODE', DEFAULT_CONFIG.COMMENT_MODE));
+        const elapsedSeconds = Number(GM_getValue('ELAPSED_SECONDS', DEFAULT_CONFIG.ELAPSED_SECONDS));
+
+        return {
+            WEBHOOK_USER_ID: Number(GM_getValue('WEBHOOK_USER_ID', DEFAULT_CONFIG.WEBHOOK_USER_ID)),
+            WEBHOOK_CODE: String(GM_getValue('WEBHOOK_CODE', DEFAULT_CONFIG.WEBHOOK_CODE)),
+            ELAPSED_SECONDS: Number.isFinite(elapsedSeconds) && elapsedSeconds > 0
+                ? elapsedSeconds
+                : DEFAULT_CONFIG.ELAPSED_SECONDS,
+            COMPLETION_COMMENT: String(
+                GM_getValue('COMPLETION_COMMENT', DEFAULT_CONFIG.COMPLETION_COMMENT),
+            ) || DEFAULT_CONFIG.COMPLETION_COMMENT,
+            COMMENT_MODE: ['auto', 'chat', 'legacy'].includes(commentMode) ? commentMode : 'auto',
+        };
+    }
+
+    function configureScript() {
+        const config = getConfiguration();
+        const userId = window.prompt('WEBHOOK_USER_ID — ID пользователя вебхука:', String(config.WEBHOOK_USER_ID));
+        if (userId === null) return;
+        if (!/^\d+$/.test(userId) || Number(userId) === 0) {
+            window.alert('WEBHOOK_USER_ID должен быть положительным целым числом.');
+            return;
+        }
+
+        const webhookCode = window.prompt('WEBHOOK_CODE — код входящего вебхука:', config.WEBHOOK_CODE);
+        if (webhookCode === null) return;
+        if (!webhookCode.trim() || webhookCode === DEFAULT_CONFIG.WEBHOOK_CODE) {
+            window.alert('Укажите код входящего вебхука.');
+            return;
+        }
+
+        const elapsedMinutes = window.prompt(
+            'ELAPSED_SECONDS — время по умолчанию в минутах:',
+            String(config.ELAPSED_SECONDS / 60),
+        );
+        if (elapsedMinutes === null) return;
+        if (!/^\d+$/.test(elapsedMinutes) || Number(elapsedMinutes) === 0) {
+            window.alert('Время должно быть положительным целым числом минут.');
+            return;
+        }
+
+        const completionComment = window.prompt(
+            'COMPLETION_COMMENT — результат работы:',
+            config.COMPLETION_COMMENT,
+        );
+        if (completionComment === null) return;
+        if (!completionComment.trim()) {
+            window.alert('COMPLETION_COMMENT не может быть пустым.');
+            return;
+        }
+
+        const commentMode = window.prompt(
+            'COMMENT_MODE — auto, chat или legacy:',
+            config.COMMENT_MODE,
+        );
+        if (commentMode === null) return;
+        if (!['auto', 'chat', 'legacy'].includes(commentMode)) {
+            window.alert('COMMENT_MODE может быть только auto, chat или legacy.');
+            return;
+        }
+
+        GM_setValue('WEBHOOK_USER_ID', Number(userId));
+        GM_setValue('WEBHOOK_CODE', webhookCode.trim());
+        GM_setValue('ELAPSED_SECONDS', Number(elapsedMinutes) * 60);
+        GM_setValue('COMPLETION_COMMENT', completionComment.trim());
+        GM_setValue('COMMENT_MODE', commentMode);
+        window.alert('Настройки сохранены. Новые значения применяются сразу.');
+    }
+    GM_registerMenuCommand('Настроить Bitrix24 Task Closer', configureScript);
     const MAX_SAFE_MINUTES = Math.floor(Number.MAX_SAFE_INTEGER / 60);
     const completedTaskIds = new Set();
     const selectedTaskIds = new Set();
@@ -42,15 +116,16 @@
     }
 
     function getMethodUrl(method, apiVersion) {
-        const code = CONFIG.WEBHOOK_CODE.trim();
+        const config = getConfiguration();
+        const code = config.WEBHOOK_CODE.trim();
 
-        if (!code || code === 'PASTE_INCOMING_WEBHOOK_CODE_HERE') {
-            throw new Error('Укажите CONFIG.WEBHOOK_CODE из входящего вебхука Bitrix24.');
+        if (!code || code === DEFAULT_CONFIG.WEBHOOK_CODE) {
+            throw new Error('Укажите WEBHOOK_CODE через меню Tampermonkey «Настроить Bitrix24 Task Closer».');
         }
 
         const apiSegment = apiVersion === 'v3' ? '/rest/api/' : '/rest/';
         return new URL(
-            `${apiSegment}${CONFIG.WEBHOOK_USER_ID}/${encodeURIComponent(code)}/${method}`,
+            `${apiSegment}${config.WEBHOOK_USER_ID}/${encodeURIComponent(code)}/${method}`,
             window.location.origin,
         );
     }
@@ -99,7 +174,8 @@
     }
 
     async function resolveCommentMode() {
-        if (CONFIG.COMMENT_MODE !== 'auto') return CONFIG.COMMENT_MODE;
+        const { COMMENT_MODE: commentMode } = getConfiguration();
+        if (commentMode !== 'auto') return commentMode;
 
         try {
             await callRest('tasks.task.chat.message.field.list', {}, 'v3');
@@ -999,8 +1075,9 @@
                 ? `Задача №${firstTask.taskId}`
                 : `Одинаковые время и комментарий будут добавлены к ${activeTasks.length} задачам.`,
         );
-        dialogState.elements.minutes.value = String(CONFIG.ELAPSED_SECONDS / 60);
-        dialogState.elements.comment.value = CONFIG.COMPLETION_COMMENT;
+        const config = getConfiguration();
+        dialogState.elements.minutes.value = String(config.ELAPSED_SECONDS / 60);
+        dialogState.elements.comment.value = config.COMPLETION_COMMENT;
         setSubmitting(false);
         clearDialogMessages();
         dialog.showModal();
