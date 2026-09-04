@@ -4,6 +4,7 @@
 // @version      5.2.0
 // @description  Завершает одну или несколько задач с записью времени и результата через REST API Bitrix24.
 // @match        https://*/company/personal/user/*/tasks/*
+// @noframes
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
@@ -11,6 +12,11 @@
 
 (function () {
     'use strict';
+
+    const INSTANCE_ATTRIBUTE = 'data-tm-task-closer-active';
+    const documentRoot = document.documentElement;
+    if (documentRoot.hasAttribute(INSTANCE_ATTRIBUTE)) return;
+    documentRoot.setAttribute(INSTANCE_ATTRIBUTE, '');
 
     const DEFAULT_CONFIG = Object.freeze({
         WEBHOOK_USER_ID: 26,
@@ -1258,9 +1264,19 @@
         updateSelectionBar();
     }
 
-    init();
+    let initScheduled = false;
+    function scheduleInit() {
+        if (initScheduled) return;
 
-    new MutationObserver(init).observe(document.body, {
+        initScheduled = true;
+        requestAnimationFrame(() => {
+            initScheduled = false;
+            init();
+        });
+    }
+
+    init();
+    new MutationObserver(scheduleInit).observe(document.body, {
         childList: true,
         subtree: true,
     });
