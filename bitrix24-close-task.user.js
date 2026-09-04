@@ -3,6 +3,11 @@
 // @namespace    http://tampermonkey.net/
 // @version      5.2.0
 // @description  Завершает одну или несколько задач с записью времени и результата через REST API Bitrix24.
+// @homepageURL  https://github.com/culnaen/bitrix24-task-closer
+// @source       https://github.com/culnaen/bitrix24-task-closer.git
+// @supportURL   https://github.com/culnaen/bitrix24-task-closer/issues
+// @downloadURL  https://raw.githubusercontent.com/culnaen/bitrix24-task-closer/master/bitrix24-close-task.user.js
+// @updateURL    https://raw.githubusercontent.com/culnaen/bitrix24-task-closer/master/bitrix24-close-task.user.js
 // @match        https://*/company/personal/user/*/tasks/*
 // @noframes
 // @grant        GM_getValue
