@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bitrix24: время, результат и завершение
 // @namespace    http://tampermonkey.net/
-// @version      5.2.0
+// @version      5.3.0
 // @description  Завершает одну или несколько задач с записью времени и результата через REST API Bitrix24.
 // @homepageURL  https://github.com/culnaen/bitrix24-task-closer
 // @source       https://github.com/culnaen/bitrix24-task-closer.git
@@ -28,11 +28,9 @@
         WEBHOOK_CODE: 'PASTE_INCOMING_WEBHOOK_CODE_HERE',
         ELAPSED_SECONDS: 60,
         COMPLETION_COMMENT: 'Решено.',
-        COMMENT_MODE: 'auto',
     });
 
     function getConfiguration() {
-        const commentMode = String(GM_getValue('COMMENT_MODE', DEFAULT_CONFIG.COMMENT_MODE));
         const elapsedSeconds = Number(GM_getValue('ELAPSED_SECONDS', DEFAULT_CONFIG.ELAPSED_SECONDS));
 
         return {
@@ -44,7 +42,6 @@
             COMPLETION_COMMENT: String(
                 GM_getValue('COMPLETION_COMMENT', DEFAULT_CONFIG.COMPLETION_COMMENT),
             ) || DEFAULT_CONFIG.COMPLETION_COMMENT,
-            COMMENT_MODE: ['auto', 'chat', 'legacy'].includes(commentMode) ? commentMode : 'auto',
         };
     }
 
@@ -113,22 +110,6 @@
             inputs[name] = input;
         }
 
-        const modeLabel = document.createElement('label');
-        modeLabel.textContent = 'COMMENT_MODE';
-        modeLabel.style.cssText = 'display:block;margin-top:12px;';
-        const mode = document.createElement('select');
-        mode.style.cssText = 'box-sizing:border-box;display:block;margin-top:4px;padding:8px;width:100%;';
-        for (const [value, text] of [['auto', 'Автоматически'], ['chat', 'Чат'], ['legacy', 'Старый API']]) {
-            const option = document.createElement('option');
-            option.value = value;
-            option.textContent = text;
-            option.selected = value === config.COMMENT_MODE;
-            mode.append(option);
-        }
-        modeLabel.append(mode);
-        panel.append(modeLabel);
-        inputs.commentMode = mode;
-
         const error = document.createElement('div');
         error.style.cssText = 'color:#fca5a5;margin-top:12px;min-height:20px;';
         panel.append(error);
@@ -156,7 +137,6 @@
             GM_setValue('WEBHOOK_CODE', DEFAULT_CONFIG.WEBHOOK_CODE);
             GM_setValue('ELAPSED_SECONDS', DEFAULT_CONFIG.ELAPSED_SECONDS);
             GM_setValue('COMPLETION_COMMENT', DEFAULT_CONFIG.COMPLETION_COMMENT);
-            GM_setValue('COMMENT_MODE', DEFAULT_CONFIG.COMMENT_MODE);
             close();
         });
         panel.addEventListener('submit', (event) => {
@@ -186,7 +166,6 @@
             GM_setValue('WEBHOOK_CODE', webhookCode);
             GM_setValue('ELAPSED_SECONDS', Number(elapsedMinutes) * 60);
             GM_setValue('COMPLETION_COMMENT', completionComment);
-            GM_setValue('COMMENT_MODE', inputs.commentMode.value);
             close();
         });
 
@@ -291,38 +270,18 @@
                 ? payload.error_description
                 : apiError?.message;
 
+            const scopeHint = code?.includes('INSUFFICIENTSCOPEEXCEPTION')
+                ? ' Проверьте права входящего вебхука: нужны scope task и tasks.'
+                : '';
             throw new BitrixApiError(
                 method,
                 response.status,
                 code || 'HTTP_ERROR',
-                message || response.statusText || 'Неизвестная ошибка Bitrix24',
+                `${message || response.statusText || 'Неизвестная ошибка Bitrix24'}${scopeHint}`,
             );
         }
 
         return payload;
-    }
-
-    async function resolveCommentMode() {
-        const { COMMENT_MODE: commentMode } = getConfiguration();
-        if (commentMode !== 'auto') return commentMode;
-
-        try {
-            await callRest('tasks.task.chat.message.field.list', {}, 'v3');
-            return 'chat';
-        } catch (error) {
-            const missingMethodCodes = new Set([
-                'ERROR_METHOD_NOT_FOUND',
-                'METHOD_NOT_FOUND',
-                'ERROR_MANIFEST_IS_NOT_AVAILABLE',
-            ]);
-
-            if (error instanceof BitrixApiError
-                && (error.status === 404 || missingMethodCodes.has(error.code))) {
-                return 'legacy';
-            }
-
-            throw error;
-        }
     }
 
     async function addElapsedTime(taskId, elapsedSeconds) {
@@ -335,70 +294,23 @@
         });
     }
 
-    async function addLegacyCommentAsResult(taskId, text) {
-        const commentResponse = await callRest('task.commentitem.add', {
-            TASKID: taskId,
-            FIELDS: {
-                POST_MESSAGE: text,
-            },
-        });
-        const commentId = Number(commentResponse.result);
-
-        if (!Number.isInteger(commentId) || commentId <= 0) {
-            throw new Error('Bitrix24 не вернул ID созданного комментария.');
-        }
-
-        await callRest('tasks.task.result.addFromComment', { commentId });
-    }
-
-    async function addChatMessageAsResult(taskId, text) {
-        const taskResponse = await callRest('tasks.task.get', {
-            taskId,
-            select: ['CHAT_ID'],
-        });
-        const chatId = Number(taskResponse.result?.task?.chatId);
-
-        if (!Number.isInteger(chatId) || chatId <= 0) {
-            throw new Error('У задачи нет доступного CHAT_ID.');
-        }
-
-        const messageResponse = await callRest('im.message.add', {
-            DIALOG_ID: `chat${chatId}`,
-            MESSAGE: text,
-        });
-        const messageId = Number(messageResponse.result);
-
-        if (!Number.isInteger(messageId) || messageId <= 0) {
-            throw new Error('Bitrix24 не вернул ID сообщения чата.');
-        }
-
-        await callRest(
-            'tasks.task.result.addfromchatmessage',
-            { fields: { messageId } },
-            'v3',
-        );
-    }
-
     async function completeTask(taskId) {
         await callRest('tasks.task.complete', { taskId });
     }
 
     async function processTask(taskId, elapsedSeconds, comment, onStage, onMutationAttempt) {
         onStage('Проверка…');
-        const commentMode = await resolveCommentMode();
+        const taskResponse = await callRest('tasks.task.get', { id: taskId, select: ['id'] }, 'v3');
+        if (Number(taskResponse.result?.item?.id) !== taskId) {
+            throw new Error('Bitrix24 не вернул задачу для проверки доступа.');
+        }
 
         onStage('Время…');
         onMutationAttempt();
         await addElapsedTime(taskId, elapsedSeconds);
 
         onStage('Итог…');
-        if (commentMode === 'chat') {
-            await addChatMessageAsResult(taskId, comment);
-        } else if (commentMode === 'legacy') {
-            await addLegacyCommentAsResult(taskId, comment);
-        } else {
-            throw new Error(`Неизвестный COMMENT_MODE: ${commentMode}`);
-        }
+        await callRest('tasks.task.result.add', { fields: { taskId, text: comment } }, 'v3');
 
         onStage('Закрытие…');
         await completeTask(taskId);
@@ -1186,7 +1098,7 @@
     }
 
     document.addEventListener('change', (event) => {
-        if (event.target.matches(ROW_CHECKBOX)) scheduleInit();
+        if (event.target.matches(ROW_CHECKBOX)) updateSelectionBar();
     });
     document.addEventListener('click', (event) => {
         if (event.target.closest('.main-grid-cell-checkbox, .main-grid-row-head')) scheduleInit();
