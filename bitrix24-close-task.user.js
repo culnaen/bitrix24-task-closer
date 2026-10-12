@@ -6,8 +6,8 @@
 // @homepageURL  https://github.com/culnaen/bitrix24-task-closer
 // @source       https://github.com/culnaen/bitrix24-task-closer.git
 // @supportURL   https://github.com/culnaen/bitrix24-task-closer/issues
-// @downloadURL  https://raw.githubusercontent.com/culnaen/bitrix24-task-closer/master/bitrix24-close-task.user.js
-// @updateURL    https://raw.githubusercontent.com/culnaen/bitrix24-task-closer/master/bitrix24-close-task.user.js
+// @downloadURL  https://raw.githubusercontent.com/culnaen/bitrix24-task-closer/main/bitrix24-close-task.user.js
+// @updateURL    https://raw.githubusercontent.com/culnaen/bitrix24-task-closer/main/bitrix24-close-task.user.js
 // @match        https://*/company/personal/user/*/tasks/*
 // @noframes
 // @grant        GM_getValue
