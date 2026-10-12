@@ -197,7 +197,6 @@
     GM_registerMenuCommand('Настроить Bitrix24 Task Closer', configureScript);
     const MAX_SAFE_MINUTES = Math.floor(Number.MAX_SAFE_INTEGER / 60);
     const completedTaskIds = new Set();
-    const selectedTaskIds = new Set();
 
     class BitrixApiError extends Error {
         constructor(method, status, code, message) {
@@ -209,10 +208,36 @@
         }
     }
 
+    const TASK_ROWS = 'tr.main-grid-row-body[data-id]';
+    const ROW_CHECKBOX = 'input.main-grid-row-checkbox[type="checkbox"]';
+
+    function isTaskList() {
+        return /\/company\/personal\/user\/\d+\/tasks\/?$/.test(window.location.pathname)
+            && new URLSearchParams(window.location.search).get('F_STATE') === 'sV80';
+    }
+
     function getTaskId(item) {
-        const link = item.querySelector('.tasks-kanban-item-title');
-        const match = link?.href?.match(/task\/view\/(\d+)/);
-        return match ? Number(match[1]) : null;
+        const id = item.dataset.id;
+        return /^\d+$/.test(id || '') && Number.isSafeInteger(Number(id))
+            ? Number(id)
+            : null;
+    }
+
+    function getTaskRows() {
+        return document.querySelectorAll(TASK_ROWS);
+    }
+
+    function getSelectedTasks() {
+        const tasks = [];
+        const seenTaskIds = new Set();
+        getTaskRows().forEach((item) => {
+            const taskId = getTaskId(item);
+            const checkbox = item.querySelector(ROW_CHECKBOX);
+            if (!checkbox?.checked || !taskId || completedTaskIds.has(taskId) || seenTaskIds.has(taskId)) return;
+            seenTaskIds.add(taskId);
+            tasks.push({ taskId, item });
+        });
+        return tasks;
     }
 
     function keepShortRussianWordsTogether(text) {
@@ -401,7 +426,6 @@
         style.id = 'tm-completion-styles';
         style.textContent = `
             .tm-add-time,
-            .tm-task-selector,
             .tm-selection-bar,
             .tm-completion-dialog {
                 --tm-surface: #ffffff;
@@ -481,41 +505,6 @@
                 color: var(--tm-success);
             }
 
-            .tm-task-selector {
-                display: inline-flex;
-                align-items: center;
-                gap: var(--tm-space-1);
-                min-block-size: 28px;
-                margin-inline-start: var(--tm-space-2);
-                color: var(--tm-text-secondary);
-                cursor: pointer;
-                font: 400 var(--tm-font-small)/1.4 Arial, "Helvetica Neue", sans-serif;
-            }
-
-            .tm-task-selector__input {
-                inline-size: 16px;
-                block-size: 16px;
-                margin: 0;
-                accent-color: var(--tm-accent);
-                cursor: pointer;
-            }
-
-            .tm-task-selector__input:focus-visible {
-                outline: var(--tm-border-width) solid var(--tm-accent);
-                outline-offset: var(--tm-space-1);
-                box-shadow: 0 0 0 var(--tm-space-1) var(--tm-focus);
-            }
-
-            .tm-task-selector:has(.tm-task-selector__input:checked) {
-                color: var(--tm-accent);
-                font-weight: 600;
-            }
-
-            .tm-task-selector:has(.tm-task-selector__input:disabled) {
-                color: var(--tm-disabled);
-                cursor: default;
-                opacity: var(--tm-opacity-trigger-disabled);
-            }
 
             .tm-selection-bar {
                 position: fixed;
@@ -913,28 +902,19 @@
     }
 
     function syncTaskControls(taskId) {
-        document.querySelectorAll('.tasks-kanban-item').forEach((item) => {
+        getTaskRows().forEach((item) => {
             if (getTaskId(item) !== taskId) return;
-
+            const checkbox = item.querySelector(ROW_CHECKBOX);
+            if (completedTaskIds.has(taskId) && checkbox?.checked) checkbox.click();
             const trigger = item.querySelector('.tm-add-time');
-            const selector = item.querySelector('.tm-task-selector__input');
-            if (completedTaskIds.has(taskId)) {
-                if (trigger) markTriggerCompleted(trigger, taskId);
-                if (selector) {
-                    selector.checked = false;
-                    selector.disabled = true;
-                }
-                return;
-            }
-            if (selector) selector.checked = selectedTaskIds.has(taskId);
+            if (completedTaskIds.has(taskId) && trigger) markTriggerCompleted(trigger, taskId);
         });
     }
 
     function updateSelectionBar() {
-        const selectedCount = selectedTaskIds.size;
         if (!selectionState.bar) return;
-
-        const shouldHide = selectedCount === 0;
+        const selectedCount = getSelectedTasks().length;
+        const shouldHide = !isTaskList() || selectedCount === 0;
         const countText = `Выбрано: ${selectedCount}`;
         if (selectionState.bar.hidden !== shouldHide) selectionState.bar.hidden = shouldHide;
         if (selectionState.count.textContent !== countText) selectionState.count.textContent = countText;
@@ -942,39 +922,11 @@
     }
 
     function clearSelection() {
-        const taskIds = [...selectedTaskIds];
-        selectedTaskIds.clear();
-        taskIds.forEach(syncTaskControls);
+        getTaskRows().forEach((item) => {
+            const checkbox = item.querySelector(ROW_CHECKBOX);
+            if (checkbox?.checked) checkbox.click();
+        });
         updateSelectionBar();
-    }
-
-    function getSelectedTasks() {
-        const tasks = [];
-        const seenTaskIds = new Set();
-
-        document.querySelectorAll('.tasks-kanban-item').forEach((item) => {
-            const taskId = getTaskId(item);
-            if (!taskId || seenTaskIds.has(taskId) || !selectedTaskIds.has(taskId)) return;
-
-            seenTaskIds.add(taskId);
-            tasks.push({
-                taskId,
-                item,
-                trigger: item.querySelector('.tm-add-time'),
-            });
-        });
-        return tasks;
-    }
-
-    function pruneUnavailableSelections() {
-        const availableTaskIds = new Set();
-        document.querySelectorAll('.tasks-kanban-item').forEach((item) => {
-            const taskId = getTaskId(item);
-            if (taskId) availableTaskIds.add(taskId);
-        });
-        selectedTaskIds.forEach((taskId) => {
-            if (!availableTaskIds.has(taskId)) selectedTaskIds.delete(taskId);
-        });
     }
 
     function createSelectionBar() {
@@ -1000,14 +952,13 @@
         selectionState.submit.addEventListener('click', () => {
             const tasks = getSelectedTasks();
             if (tasks.length === 0) {
-                clearSelection();
+                updateSelectionBar();
                 return;
             }
             openDialog(tasks, selectionState.submit);
         });
         return bar;
     }
-
     function createDialog() {
         installStyles();
 
@@ -1111,14 +1062,9 @@
                     );
                     completedCount += 1;
                     completedTaskIds.add(activeTask.taskId);
-                    selectedTaskIds.delete(activeTask.taskId);
                     syncTaskControls(activeTask.taskId);
                 } catch (error) {
                     failures.push({ activeTask, error, mutationAttempted });
-                    if (mutationAttempted) {
-                        selectedTaskIds.delete(activeTask.taskId);
-                        syncTaskControls(activeTask.taskId);
-                    }
                     console.error('[Bitrix24 task completion]', activeTask.taskId, error);
                 }
             }
@@ -1164,7 +1110,7 @@
         if (dialog.open) return;
 
         const firstTask = activeTasks[0];
-        const title = firstTask.item.querySelector('.tasks-kanban-item-title')?.textContent?.trim()
+        const title = firstTask.item.querySelector('a[href*="/tasks/task/view/"]')?.textContent?.trim()
             || `Задача №${firstTask.taskId}`;
         dialogState.activeTasks = activeTasks;
         dialogState.focusReturn = focusReturn;
@@ -1193,8 +1139,13 @@
 
     function addButton(item) {
         if (item.querySelector('.tm-add-time')) return;
+        const taskId = getTaskId(item);
+        if (!taskId || !item.querySelector(ROW_CHECKBOX)) return;
 
-        const container = item.querySelector('.tasks-kanban-actions-container');
+        const titleLink = item.querySelector('a[href*="/tasks/task/view/"]');
+        const titleCell = titleLink?.closest('td')
+            || item.querySelector('td[data-name="TITLE"], td[data-name="NAME"]');
+        const container = titleCell?.querySelector('.main-grid-cell-content') || titleCell;
         if (!container) return;
 
         const button = document.createElement('button');
@@ -1202,77 +1153,31 @@
         button.textContent = 'Завершить…';
         button.className = 'tm-add-time';
         button.title = 'Записать время и результат, затем завершить задачу';
-
-        const initialTaskId = getTaskId(item);
-        if (initialTaskId && completedTaskIds.has(initialTaskId)) {
-            markTriggerCompleted(button, initialTaskId);
-        }
-
+        if (completedTaskIds.has(taskId)) markTriggerCompleted(button, taskId);
         button.addEventListener('click', (event) => {
             event.preventDefault();
             event.stopPropagation();
-
             if (button.disabled) return;
-
-            const taskId = getTaskId(item);
-            if (!taskId) {
-                button.textContent = 'Нет ID';
-                setTimeout(() => { button.textContent = 'Завершить…'; }, 2500);
-                return;
-            }
-
-            if (completedTaskIds.has(taskId)) {
-                markTriggerCompleted(button, taskId);
-                return;
-            }
-
-            openDialog([{ taskId, item, trigger: button }], button);
+            openDialog([{ taskId, item }], button);
         });
-
         container.appendChild(button);
     }
 
-    function addSelector(item) {
-        if (item.querySelector('.tm-task-selector')) return;
-
-        const container = item.querySelector('.tasks-kanban-actions-container');
-        const taskId = getTaskId(item);
-        if (!container || !taskId) return;
-
-        const label = document.createElement('label');
-        label.className = 'tm-task-selector';
-        label.title = `Выбрать задачу ${taskId} для группового завершения`;
-        label.innerHTML = `
-            <input class="tm-task-selector__input" type="checkbox" aria-label="Выбрать задачу ${taskId}">
-            <span>Выбрать</span>
-        `;
-        const checkbox = label.querySelector('.tm-task-selector__input');
-        checkbox.checked = selectedTaskIds.has(taskId);
-        checkbox.disabled = completedTaskIds.has(taskId);
-        checkbox.addEventListener('click', (event) => event.stopPropagation());
-        checkbox.addEventListener('change', () => {
-            if (checkbox.checked) selectedTaskIds.add(taskId);
-            else selectedTaskIds.delete(taskId);
-            updateSelectionBar();
-        });
-        container.prepend(label);
-    }
-
     function init() {
+        if (!isTaskList()) {
+            document.querySelectorAll('.tm-add-time').forEach((button) => button.remove());
+            updateSelectionBar();
+            return;
+        }
         installStyles();
         createSelectionBar();
-        pruneUnavailableSelections();
-        document.querySelectorAll('.tasks-kanban-item').forEach((item) => {
-            addSelector(item);
-            addButton(item);
-        });
+        getTaskRows().forEach(addButton);
         updateSelectionBar();
     }
 
     let initScheduled = false;
     function scheduleInit() {
         if (initScheduled) return;
-
         initScheduled = true;
         requestAnimationFrame(() => {
             initScheduled = false;
@@ -1280,6 +1185,12 @@
         });
     }
 
+    document.addEventListener('change', (event) => {
+        if (event.target.matches(ROW_CHECKBOX)) scheduleInit();
+    });
+    document.addEventListener('click', (event) => {
+        if (event.target.closest('.main-grid-cell-checkbox, .main-grid-row-head')) scheduleInit();
+    });
     init();
     new MutationObserver(scheduleInit).observe(document.body, {
         childList: true,
