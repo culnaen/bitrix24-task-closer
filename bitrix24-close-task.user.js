@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         Bitrix24: время, результат и завершение
 // @namespace    http://tampermonkey.net/
-// @version      5.3.1
+// @version      5.3.2
 // @description  Завершает одну или несколько задач с записью времени и результата через REST API Bitrix24.
 // @homepageURL  https://github.com/culnaen/bitrix24-task-closer
 // @source       https://github.com/culnaen/bitrix24-task-closer.git
 // @supportURL   https://github.com/culnaen/bitrix24-task-closer/issues
 // @downloadURL  https://raw.githubusercontent.com/culnaen/bitrix24-task-closer/main/bitrix24-close-task.user.js
 // @updateURL    https://raw.githubusercontent.com/culnaen/bitrix24-task-closer/main/bitrix24-close-task.user.js
+// @match        https://*/company/personal/user/*/tasks
 // @match        https://*/company/personal/user/*/tasks/*
 // @noframes
 // @grant        GM_getValue
@@ -191,8 +192,7 @@
     const ROW_CHECKBOX = 'input.main-grid-row-checkbox[type="checkbox"]';
 
     function isTaskList() {
-        return /\/company\/personal\/user\/\d+\/tasks\/?$/.test(window.location.pathname)
-            && new URLSearchParams(window.location.search).get('F_STATE') === 'sV80';
+        return /\/company\/personal\/user\/\d+\/tasks\/?$/.test(window.location.pathname);
     }
 
     function getTaskId(item) {
@@ -212,7 +212,8 @@
         getTaskRows().forEach((item) => {
             const taskId = getTaskId(item);
             const checkbox = item.querySelector(ROW_CHECKBOX);
-            if (!checkbox?.checked || !taskId || completedTaskIds.has(taskId) || seenTaskIds.has(taskId)) return;
+            if (!checkbox?.checked || !item.getClientRects().length
+                || !taskId || completedTaskIds.has(taskId) || seenTaskIds.has(taskId)) return;
             seenTaskIds.add(taskId);
             tasks.push({ taskId, item });
         });
@@ -997,12 +998,10 @@
     }
 
     function init() {
-        if (!isTaskList()) {
-            updateSelectionBar();
-            return;
+        if (isTaskList() && getSelectedTasks().length > 0) {
+            installStyles();
+            createSelectionBar();
         }
-        installStyles();
-        createSelectionBar();
         updateSelectionBar();
     }
 
@@ -1017,7 +1016,7 @@
     }
 
     document.addEventListener('change', (event) => {
-        if (event.target.matches(ROW_CHECKBOX)) updateSelectionBar();
+        if (event.target.matches(ROW_CHECKBOX)) init();
     });
     document.addEventListener('click', (event) => {
         if (event.target.closest('.main-grid-cell-checkbox, .main-grid-row-head')) scheduleInit();
