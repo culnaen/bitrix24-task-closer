@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bitrix24: время, результат и завершение
 // @namespace    http://tampermonkey.net/
-// @version      5.3.0
+// @version      5.3.1
 // @description  Завершает одну или несколько задач с записью времени и результата через REST API Bitrix24.
 // @homepageURL  https://github.com/culnaen/bitrix24-task-closer
 // @source       https://github.com/culnaen/bitrix24-task-closer.git
@@ -337,7 +337,6 @@
         const style = document.createElement('style');
         style.id = 'tm-completion-styles';
         style.textContent = `
-            .tm-add-time,
             .tm-selection-bar,
             .tm-completion-dialog {
                 --tm-surface: #ffffff;
@@ -353,12 +352,10 @@
                 --tm-accent-active: #134c86;
                 --tm-success: #287d3c;
                 --tm-error: #b42318;
-                --tm-disabled: #9ba3aa;
                 --tm-focus: rgba(32, 103, 176, 0.28);
                 --tm-backdrop: rgba(28, 38, 48, 0.42);
                 --tm-shadow-modal: 0 12px 36px rgba(32, 45, 58, 0.24);
                 --tm-shadow-floating: 0 6px 22px rgba(32, 45, 58, 0.2);
-                --tm-opacity-trigger-disabled: .72;
                 --tm-opacity-control-disabled: .66;
                 --tm-space-1: 4px;
                 --tm-space-2: 8px;
@@ -377,46 +374,6 @@
                 --tm-radius-dialog: 5px;
                 --tm-motion-fast: 120ms ease-out;
             }
-
-            .tm-add-time {
-                border: 0;
-                background: transparent;
-                color: var(--tm-accent);
-                cursor: pointer;
-                margin-inline-start: var(--tm-space-2);
-                padding: var(--tm-space-1) 0;
-                font: 400 var(--tm-font-small)/1.4 Arial, "Helvetica Neue", sans-serif;
-                text-decoration: none;
-                transition: color var(--tm-motion-fast), opacity var(--tm-motion-fast);
-            }
-
-            .tm-add-time:hover {
-                color: var(--tm-accent-hover);
-                text-decoration: underline;
-            }
-
-            .tm-add-time:active {
-                color: var(--tm-accent-active);
-            }
-
-            .tm-add-time:focus-visible {
-                border-radius: var(--tm-radius-small);
-                outline: var(--tm-border-width) solid var(--tm-accent);
-                outline-offset: var(--tm-space-1);
-                box-shadow: 0 0 0 var(--tm-space-1) var(--tm-focus);
-            }
-
-            .tm-add-time:disabled {
-                color: var(--tm-disabled);
-                cursor: default;
-                opacity: var(--tm-opacity-trigger-disabled);
-                text-decoration: none;
-            }
-
-            .tm-add-time[data-state="success"]:disabled {
-                color: var(--tm-success);
-            }
-
 
             .tm-selection-bar {
                 position: fixed;
@@ -721,7 +678,6 @@
             }
 
             @media (prefers-reduced-motion: reduce) {
-                .tm-add-time,
                 .tm-selection-bar__button,
                 .tm-completion-dialog__button {
                     transition: none;
@@ -806,20 +762,11 @@
         dialogState.dialog.close(returnValue);
     }
 
-    function markTriggerCompleted(trigger, taskId) {
-        trigger.textContent = 'Готово';
-        trigger.title = `Задача ${taskId} завершена`;
-        trigger.dataset.state = 'success';
-        trigger.disabled = true;
-    }
-
-    function syncTaskControls(taskId) {
+    function unselectCompletedTask(taskId) {
         getTaskRows().forEach((item) => {
             if (getTaskId(item) !== taskId) return;
             const checkbox = item.querySelector(ROW_CHECKBOX);
-            if (completedTaskIds.has(taskId) && checkbox?.checked) checkbox.click();
-            const trigger = item.querySelector('.tm-add-time');
-            if (completedTaskIds.has(taskId) && trigger) markTriggerCompleted(trigger, taskId);
+            if (checkbox?.checked) checkbox.click();
         });
     }
 
@@ -974,7 +921,7 @@
                     );
                     completedCount += 1;
                     completedTaskIds.add(activeTask.taskId);
-                    syncTaskControls(activeTask.taskId);
+                    unselectCompletedTask(activeTask.taskId);
                 } catch (error) {
                     failures.push({ activeTask, error, mutationAttempted });
                     console.error('[Bitrix24 task completion]', activeTask.taskId, error);
@@ -1049,41 +996,13 @@
         });
     }
 
-    function addButton(item) {
-        if (item.querySelector('.tm-add-time')) return;
-        const taskId = getTaskId(item);
-        if (!taskId || !item.querySelector(ROW_CHECKBOX)) return;
-
-        const titleLink = item.querySelector('a[href*="/tasks/task/view/"]');
-        const titleCell = titleLink?.closest('td')
-            || item.querySelector('td[data-name="TITLE"], td[data-name="NAME"]');
-        const container = titleCell?.querySelector('.main-grid-cell-content') || titleCell;
-        if (!container) return;
-
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.textContent = 'Завершить…';
-        button.className = 'tm-add-time';
-        button.title = 'Записать время и результат, затем завершить задачу';
-        if (completedTaskIds.has(taskId)) markTriggerCompleted(button, taskId);
-        button.addEventListener('click', (event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            if (button.disabled) return;
-            openDialog([{ taskId, item }], button);
-        });
-        container.appendChild(button);
-    }
-
     function init() {
         if (!isTaskList()) {
-            document.querySelectorAll('.tm-add-time').forEach((button) => button.remove());
             updateSelectionBar();
             return;
         }
         installStyles();
         createSelectionBar();
-        getTaskRows().forEach(addButton);
         updateSelectionBar();
     }
 
